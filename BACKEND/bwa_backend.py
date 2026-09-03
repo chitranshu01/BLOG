@@ -27,6 +27,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
 
 load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+IMAGES_DIR = BASE_DIR / "images"
+IMAGES_DIR.mkdir(exist_ok=True)
 BACKEND_BASE_URL = os.getenv(
     "BACKEND_BASE_URL",
     "http://127.0.0.1:8000"
@@ -656,10 +659,10 @@ def generate_and_place_images(state: State) -> dict:
     if not include_images or not image_specs:
         final_md = sanitize_markdown_for_user_settings(md, allow_code=include_code, allow_images=False)
         filename = f"{_safe_slug(plan.blog_title)}.md"
-        Path(filename).write_text(final_md, encoding="utf-8")
+        (BASE_DIR / filename).write_text(final_md, encoding="utf-8")
         return {"final": final_md}
 
-    images_dir = Path("images")
+    images_dir = IMAGES_DIR
     images_dir.mkdir(exist_ok=True)
 
     for spec in image_specs:
@@ -691,7 +694,7 @@ def generate_and_place_images(state: State) -> dict:
 
     final_md = sanitize_markdown_for_user_settings(md, allow_code=include_code, allow_images=True)
     filename = f"{_safe_slug(plan.blog_title)}.md"
-    Path(filename).write_text(final_md, encoding="utf-8")
+    (BASE_DIR / filename).write_text(final_md, encoding="utf-8")
     return {"final": final_md}
 
 # build reducer subgraph
@@ -726,7 +729,7 @@ g.add_edge("reducer", END)
 graph_app = g.compile()
 
 api = FastAPI(title="AI Blog Writer API")
-api.mount("/images", StaticFiles(directory="images"), name="images")
+api.mount("/images", StaticFiles(directory=str(IMAGES_DIR)), name="images")
 
 frontend_url = os.getenv("FRONTEND_URL", "").rstrip("/")
 api.add_middleware(
