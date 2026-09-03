@@ -444,6 +444,8 @@ Constraints:
 - Cover ALL bullets in order.
 - Target words ±15%.
 - Output only section markdown starting with "## <Section Title>".
+- Write complete article prose under the heading: at least 2 paragraphs and 120 words.
+- Never return a list of headings, an outline, or headings without explanatory text.
 - Include source links when a fact or claim is based on the provided evidence.
 - Use inline citations like [Source](URL) right next to the sentence or claim that comes from evidence.
 - If the evidence does not support a statement, say "Not found in provided sources." rather than inventing it.
@@ -476,33 +478,42 @@ def worker_node(payload: dict) -> dict:
         for e in evidence[:20]
     )
 
+    prompt = (
+        f"Blog title: {plan.blog_title}\n"
+        f"Audience: {audience}\n"
+        f"Tone: {tone}\n"
+        f"Blog kind: {plan.blog_kind}\n"
+        f"Constraints: {plan.constraints}\n"
+        f"Topic: {payload['topic']}\n"
+        f"Mode: {payload.get('mode')}\n"
+        f"As-of: {payload.get('as_of')} (recency_days={payload.get('recency_days')})\n\n"
+        f"Section title: {task.title}\n"
+        f"Goal: {task.goal}\n"
+        f"Target words: {task.target_words}\n"
+        f"Tags: {task.tags}\n"
+        f"requires_research: {task.requires_research}\n"
+        f"requires_citations: {task.requires_citations}\n"
+        f"requires_code: {task.requires_code}\n"
+        f"Audience hint: Write for {audience}. Use the right depth for that audience. If the audience is science-minded, use more technical detail; if the audience is general readers, explain clearly without jargon.\n"
+        f"Bullets:{bullets_text}\n\n"
+        f"Evidence (ONLY cite these URLs):\n{evidence_text}\n"
+    )
+
     section_md = llm.invoke(
         [
             SystemMessage(content=WORKER_SYSTEM),
-            HumanMessage(
-                content=(
-                    f"Blog title: {plan.blog_title}\n"
-                    f"Audience: {audience}\n"
-                    f"Tone: {tone}\n"
-                    f"Blog kind: {plan.blog_kind}\n"
-                    f"Constraints: {plan.constraints}\n"
-                    f"Topic: {payload['topic']}\n"
-                    f"Mode: {payload.get('mode')}\n"
-                    f"As-of: {payload.get('as_of')} (recency_days={payload.get('recency_days')})\n\n"
-                    f"Section title: {task.title}\n"
-                    f"Goal: {task.goal}\n"
-                    f"Target words: {task.target_words}\n"
-                    f"Tags: {task.tags}\n"
-                    f"requires_research: {task.requires_research}\n"
-                    f"requires_citations: {task.requires_citations}\n"
-                    f"requires_code: {task.requires_code}\n"
-                    f"Audience hint: Write for {audience}. Use the right depth for that audience. If the audience is science-minded, use more technical detail; if the audience is general readers, explain clearly without jargon.\n"
-                    f"Bullets:{bullets_text}\n\n"
-                    f"Evidence (ONLY cite these URLs):\n{evidence_text}\n"
-                )
-            ),
+            HumanMessage(content=prompt),
         ]
     ).content.strip()
+
+    prose = re.sub(r"^\s*#{1,6}\s+.*$", "", section_md, flags=re.MULTILINE).strip()
+    if len(prose.split()) < 40:
+        section_md = llm.invoke(
+            [
+                SystemMessage(content=WORKER_SYSTEM),
+                HumanMessage(content=f"The previous response was only an outline. Rewrite it as a finished section with complete prose under the heading.\n\n{prompt}"),
+            ]
+        ).content.strip()
 
     return {"sections": [(task.id, section_md)]}
 
