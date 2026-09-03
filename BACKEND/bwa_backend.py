@@ -15,6 +15,7 @@ import re
 from datetime import date, timedelta
 from pathlib import Path
 from typing import TypedDict, List, Optional, Literal, Annotated
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -100,6 +101,9 @@ class GlobalImagePlan(BaseModel):
 
 class State(TypedDict):
     topic: str
+    audience: str
+    tone: str
+    requested_mode: str
 
     # routing / research
     mode: str
@@ -119,15 +123,89 @@ class State(TypedDict):
     merged_md: str
     md_with_placeholders: str
     image_specs: List[dict]
+    include_code: bool
+    include_images: bool
 
     final: str
+
+
+def resolve_router_mode(topic: str, llm_decision: Optional[dict] = None) -> str:
+    text = (topic or "").strip().lower()
+    if not text:
+        return "closed_book"
+
+    recent_keywords = [
+        "latest", "breaking", "this week", "recent", "news", "today", "just announced",
+        "new release", "launch", "pricing", "policy", "update", "live", "current"
+    ]
+    if any(keyword in text for keyword in recent_keywords):
+        return "open_book"
+
+    if llm_decision:
+        if llm_decision.get("needs_research") is True:
+            if str(llm_decision.get("mode", "")).lower() == "open_book":
+                return "open_book"
+            if str(llm_decision.get("mode", "")).lower() == "hybrid":
+                return "hybrid"
+        if llm_decision.get("needs_research") is False:
+            return "closed_book"
+
+    comparison_keywords = ["compare", "vs", "difference between", "versus", "which is better", "adoption"]
+    if any(keyword in text for keyword in comparison_keywords):
+        return "hybrid"
+
+    teaching_keywords = ["what is", "how does", "how to", "overview", "basics", "introduction", "guide", "explain", "tutorial"]
+    if any(keyword in text for keyword in teaching_keywords):
+        return "closed_book"
+
+    return "hybrid"
+
+
+def sanitize_markdown_for_user_settings(markdown: str, allow_code: bool = True, allow_images: bool = True) -> str:
+    text = markdown or ""
+    if not allow_code:
+        text = re.sub(r"```[\s\S]*?```", "\n", text)
+        text = re.sub(r"`[^`\n]+`", "", text)
+    if not allow_images:
+        text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+        text = re.sub(r"<img[^>]*>", "", text, flags=re.IGNORECASE)
+    text = text.replace("\r\n", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def _valid_source_url(url: str) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if not parsed.netloc:
+        return False
+    return True
+
+
+def _source_value(item, key: str, default=""):
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _clean_evidence(evidence: list) -> list:
+    items = []
+    for item in evidence or []:
+        url = _source_value(item, "url")
+        if not _valid_source_url(str(url or "")):
+            continue
+        items.append(item)
+    return items
 
 
 # -----------------------------
 # 2) LLM
 # -----------------------------
 llm = ChatOpenRouter(
-    model="qwen/qwen3-235b-a22b-2507:free",
+    model="qwen/qwen3-30b-a3b-instruct-2507",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1",
     temperature=0,
@@ -149,6 +227,7 @@ Modes:
 If needs_research=true:
 - Output 3–10 high-signal, scoped queries.
 - For open_book weekly roundup, include queries reflecting last 7 days.
+- Add "official", "primary source", or the relevant authority to queries when useful.
 """
 
 def router_node(state: State) -> dict:
@@ -160,16 +239,30 @@ def router_node(state: State) -> dict:
         ]
     )
 
-    if decision.mode == "open_book":
+    requested_mode = state.get("requested_mode", "auto")
+    if requested_mode in {"closed_book", "hybrid", "open_book"}:
+        resolved_mode = requested_mode
+    else:
+        resolved_mode = resolve_router_mode(
+            state["topic"],
+            decision.model_dump() if hasattr(decision, "model_dump") else {
+                "needs_research": decision.needs_research,
+                "mode": decision.mode,
+            },
+        )
+        if resolved_mode == "closed_book":
+            resolved_mode = "hybrid"
+
+    if resolved_mode == "open_book":
         recency_days = 7
-    elif decision.mode == "hybrid":
+    elif resolved_mode == "hybrid":
         recency_days = 45
     else:
         recency_days = 3650
 
     return {
-        "needs_research": decision.needs_research,
-        "mode": decision.mode,
+        "needs_research": bool(decision.needs_research or resolved_mode in {"hybrid", "open_book"}),
+        "mode": resolved_mode,
         "queries": decision.queries,
         "recency_days": recency_days,
     }
@@ -216,7 +309,11 @@ Given raw web search results, produce EvidenceItem objects.
 
 Rules:
 - Only include items with a non-empty url.
-- Prefer relevant + authoritative sources.
+- Prefer current official and primary sources: government sites, standards bodies,
+  official project documentation, universities, peer-reviewed papers, and original
+  company announcements. Use reputable journalism only when no primary source exists.
+- Never invent, rewrite, or guess a URL. Copy URLs exactly from the raw results.
+- Prefer the newest relevant result for time-sensitive topics.
 - Normalize published_at to ISO YYYY-MM-DD if reliably inferable; else null (do NOT guess).
 - Keep snippets short.
 - Deduplicate by URL.
@@ -226,7 +323,7 @@ def research_node(state: State) -> dict:
     queries = (state.get("queries") or [])[:10]
     raw: List[dict] = []
     for q in queries:
-        raw.extend(_tavily_search(q, max_results=6))
+        raw.extend(_clean_evidence(_tavily_search(q, max_results=6)))
 
     if not raw:
         return {"evidence": []}
@@ -245,9 +342,10 @@ def research_node(state: State) -> dict:
         ]
     )
 
+    allowed_urls = {item["url"] for item in raw if item.get("url")}
     dedup = {}
     for e in pack.evidence:
-        if e.url:
+        if e.url in allowed_urls:
             dedup[e.url] = e
     evidence = list(dedup.values())
 
@@ -322,6 +420,8 @@ def fanout(state: State):
                 "recency_days": state["recency_days"],
                 "plan": state["plan"].model_dump(),
                 "evidence": [e.model_dump() for e in state.get("evidence", [])],
+                "audience": state.get("audience", "General technical readers"),
+                "tone": state.get("tone", "Clear and practical"),
             },
         )
         for task in state["plan"].tasks
@@ -337,6 +437,9 @@ Constraints:
 - Cover ALL bullets in order.
 - Target words ±15%.
 - Output only section markdown starting with "## <Section Title>".
+- Include source links when a fact or claim is based on the provided evidence.
+- Use inline citations like [Source](URL) right next to the sentence or claim that comes from evidence.
+- If the evidence does not support a statement, say "Not found in provided sources." rather than inventing it.
 
 Scope guard:
 - If blog_kind=="news_roundup", do NOT drift into tutorials (scraping/RSS/how to fetch).
@@ -350,12 +453,15 @@ Grounding:
 
 Code:
 - If requires_code==true, include at least one minimal snippet.
+- If requires_code==false, do not include code blocks or inline code snippets.
 """
 
 def worker_node(payload: dict) -> dict:
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
-    evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
+    evidence = [EvidenceItem(**e) for e in _clean_evidence(payload.get("evidence", []))]
+    audience = payload.get("audience") or plan.audience or "General technical readers"
+    tone = payload.get("tone") or plan.tone or "Clear and practical"
 
     bullets_text = "\n- " + "\n- ".join(task.bullets)
     evidence_text = "\n".join(
@@ -369,8 +475,8 @@ def worker_node(payload: dict) -> dict:
             HumanMessage(
                 content=(
                     f"Blog title: {plan.blog_title}\n"
-                    f"Audience: {plan.audience}\n"
-                    f"Tone: {plan.tone}\n"
+                    f"Audience: {audience}\n"
+                    f"Tone: {tone}\n"
                     f"Blog kind: {plan.blog_kind}\n"
                     f"Constraints: {plan.constraints}\n"
                     f"Topic: {payload['topic']}\n"
@@ -383,6 +489,7 @@ def worker_node(payload: dict) -> dict:
                     f"requires_research: {task.requires_research}\n"
                     f"requires_citations: {task.requires_citations}\n"
                     f"requires_code: {task.requires_code}\n"
+                    f"Audience hint: Write for {audience}. Use the right depth for that audience. If the audience is science-minded, use more technical detail; if the audience is general readers, explain clearly without jargon.\n"
                     f"Bullets:{bullets_text}\n\n"
                     f"Evidence (ONLY cite these URLs):\n{evidence_text}\n"
                 )
@@ -402,7 +509,15 @@ def merge_content(state: State) -> dict:
         raise ValueError("merge_content called without plan.")
     ordered_sections = [md for _, md in sorted(state["sections"], key=lambda x: x[0])]
     body = "\n\n".join(ordered_sections).strip()
-    merged_md = f"# {plan.blog_title}\n\n{body}\n"
+    evidence = _clean_evidence(state.get("evidence", []) or [])
+    source_links = []
+    for item in evidence[:10]:
+        url = getattr(item, "url", None) or item.get("url") if isinstance(item, dict) else None
+        title = getattr(item, "title", None) or item.get("title") if isinstance(item, dict) else "Source"
+        if url:
+            source_links.append(f"- [{title}]({url})")
+    sources_section = "\n\n## Sources\n" + "\n".join(source_links) if source_links else ""
+    merged_md = f"# {plan.blog_title}\n\n{body}\n{sources_section}\n"
     return {"merged_md": merged_md}
 
 
@@ -424,6 +539,12 @@ Rules:
 """
 
 def decide_images(state: State) -> dict:
+    if not state.get("include_images", True):
+        return {
+            "md_with_placeholders": state["merged_md"],
+            "image_specs": [],
+        }
+
     planner = llm.with_structured_output(GlobalImagePlan)
     merged_md = state["merged_md"]
     plan = state["plan"]
@@ -518,13 +639,15 @@ def generate_and_place_images(state: State) -> dict:
 
     md = state.get("md_with_placeholders") or state["merged_md"]
     image_specs = state.get("image_specs", []) or []
+    include_images = bool(state.get("include_images", True))
+    include_code = bool(state.get("include_code", True))
     print("IMAGE SPECS:", image_specs)
 
-    # If no images requested, just write merged markdown
-    if not image_specs:
+    if not include_images or not image_specs:
+        final_md = sanitize_markdown_for_user_settings(md, allow_code=include_code, allow_images=False)
         filename = f"{_safe_slug(plan.blog_title)}.md"
-        Path(filename).write_text(md, encoding="utf-8")
-        return {"final": md}
+        Path(filename).write_text(final_md, encoding="utf-8")
+        return {"final": final_md}
 
     images_dir = Path("images")
     images_dir.mkdir(exist_ok=True)
@@ -534,41 +657,29 @@ def generate_and_place_images(state: State) -> dict:
         filename = spec["filename"]
         out_path = images_dir / filename
 
-        # generate only if needed
-        # generate only if needed
         if not out_path.exists():
             try:
                 image_url = _aigurulab_generate_image_url(spec["prompt"])
-
                 img_md = (
-                 f"![{spec['alt']}]({image_url})\n"
-                 f"*{spec['caption']}*"
+                    f"![{spec['alt']}]({image_url})\n"
+                    f"*{spec['caption']}*"
                 )
-
                 md = md.replace(placeholder, img_md)
-
-            except Exception as e:
-                # graceful fallback: keep doc usable
-                prompt_block = (
-                    f"> **[IMAGE GENERATION FAILED]** {spec.get('caption', '')}\n>\n"
-                    f"> **Alt:** {spec.get('alt', '')}\n>\n"
-                    f"> **Prompt:** {spec.get('prompt', '')}\n>\n"
-                    f"> **Error:** {e}\n"
-                )
-
-                md = md.replace(placeholder, prompt_block)
+            except Exception:
+                md = md.replace(placeholder, "")
                 continue
+        else:
+            img_md = (
+                f"![{spec['alt']}]"
+                f"({BACKEND_BASE_URL}/images/{filename})\n"
+                f"*{spec['caption']}*"
+            )
+            md = md.replace(placeholder, img_md)
 
-        img_md = (
-            f"![{spec['alt']}]"
-            f"({BACKEND_BASE_URL}/images/{filename})\n"
-            f"*{spec['caption']}*"
-)
-        md = md.replace(placeholder, img_md)
-
+    final_md = sanitize_markdown_for_user_settings(md, allow_code=include_code, allow_images=True)
     filename = f"{_safe_slug(plan.blog_title)}.md"
-    Path(filename).write_text(md, encoding="utf-8")
-    return {"final": md}
+    Path(filename).write_text(final_md, encoding="utf-8")
+    return {"final": final_md}
 
 # build reducer subgraph
 reducer_graph = StateGraph(State)
@@ -619,6 +730,14 @@ api.add_middleware(
 class BlogRequest(BaseModel):
     topic: str
     as_of: str
+    audience: Optional[str] = None
+    tone: Optional[str] = None
+    mode: Optional[str] = None
+    blog_kind: Optional[str] = None
+    requires_code: Optional[bool] = None
+    include_code: Optional[bool] = None
+    include_images: Optional[bool] = None
+
 @api.get("/")
 def root():
     return {"status": "AI Blog Writer API is running"}
@@ -626,10 +745,16 @@ def root():
 
 @api.post("/api/generate")
 def generate_blog(request: BlogRequest):
+    allow_code = bool(request.requires_code if request.requires_code is not None else request.include_code if request.include_code is not None else True)
+    allow_images = bool(request.include_images if request.include_images is not None else True)
+    requested_mode = request.mode or "auto"
 
     initial_state = {
         "topic": request.topic,
-        "mode": "closed_book",
+        "audience": request.audience or "General technical readers",
+        "tone": request.tone or "Clear and practical",
+        "requested_mode": requested_mode,
+        "mode": requested_mode,
         "needs_research": False,
         "queries": [],
         "evidence": [],
@@ -640,11 +765,25 @@ def generate_blog(request: BlogRequest):
         "merged_md": "",
         "md_with_placeholders": "",
         "image_specs": [],
+        "include_code": allow_code,
+        "include_images": allow_images,
         "final": "",
     }
 
     result = graph_app.invoke(initial_state)
+    final_md = sanitize_markdown_for_user_settings(
+        result.get("final", ""),
+        allow_code=allow_code,
+        allow_images=allow_images,
+    )
 
     return {
-        "content": result["final"]
+        "content": final_md,
+        "final": final_md,
+        "mode": result.get("mode", requested_mode),
+        "evidence": [e.model_dump() if hasattr(e, "model_dump") else e for e in result.get("evidence", [])],
+        "image_specs": result.get("image_specs", []),
+        "plan": (
+            result["plan"].model_dump() if result.get("plan") is not None and hasattr(result["plan"], "model_dump") else result.get("plan")
+        ),
     }
