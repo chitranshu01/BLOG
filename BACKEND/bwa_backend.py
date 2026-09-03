@@ -193,10 +193,14 @@ def _source_value(item, key: str, default=""):
 
 def _clean_evidence(evidence: list) -> list:
     items = []
+    seen_urls = set()
     for item in evidence or []:
         url = _source_value(item, "url")
         if not _valid_source_url(str(url or "")):
             continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
         items.append(item)
     return items
 
@@ -279,7 +283,7 @@ def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
     try:
         from langchain_community.tools.tavily_search import TavilySearchResults  # type: ignore
         tool = TavilySearchResults(max_results=max_results)
-        results = tool.invoke({"query": query})
+        results = tool.invoke({"query": f"{query} official primary source research paper"})
         out: List[dict] = []
         for r in results or []:
             out.append(
@@ -616,7 +620,13 @@ def _aigurulab_generate_image_url(
     print("AI GURU LAB RESPONSE:")
     print(data)
 
-    image_url = data.get("image")
+    image_url = data.get("image") or data.get("image_url") or data.get("url")
+    if not image_url and isinstance(data.get("data"), dict):
+        image_url = (
+            data["data"].get("image")
+            or data["data"].get("image_url")
+            or data["data"].get("url")
+        )
 
     if not image_url:
         raise RuntimeError(
@@ -654,14 +664,17 @@ def generate_and_place_images(state: State) -> dict:
 
     for spec in image_specs:
         placeholder = spec["placeholder"]
-        filename = spec["filename"]
+        filename = Path(spec["filename"]).name
         out_path = images_dir / filename
 
         if not out_path.exists():
             try:
                 image_url = _aigurulab_generate_image_url(spec["prompt"])
+                image_response = requests.get(image_url, timeout=120)
+                image_response.raise_for_status()
+                out_path.write_bytes(image_response.content)
                 img_md = (
-                    f"![{spec['alt']}]({image_url})\n"
+                    f"![{spec['alt']}]({BACKEND_BASE_URL}/images/{filename})\n"
                     f"*{spec['caption']}*"
                 )
                 md = md.replace(placeholder, img_md)
@@ -715,14 +728,16 @@ graph_app = g.compile()
 api = FastAPI(title="AI Blog Writer API")
 api.mount("/images", StaticFiles(directory="images"), name="images")
 
+frontend_url = os.getenv("FRONTEND_URL", "").rstrip("/")
 api.add_middleware(
     CORSMiddleware,
-    allow_origins=[
+    allow_origins=[origin for origin in [
         "http://localhost:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
-    ],    
+        frontend_url,
+    ] if origin],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

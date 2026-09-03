@@ -146,6 +146,20 @@ graph TD
    ```
    The frontend will be running at `http://localhost:5173`.
 
+### Deploying to Vercel
+
+Deploy the `FRONTEND` folder as a Vercel project with:
+
+- **Root Directory:** `FRONTEND`
+- **Build Command:** `npm run build`
+- **Output Directory:** `dist`
+- **Environment variable:** `VITE_API_BASE_URL=https://your-public-backend-url`
+
+Deploy the `BACKEND` folder separately to a Python host that supports FastAPI. Set
+`OPENROUTER_API_KEY`, `TAVILY_API_KEY`, `AIGURULAB_API_KEY`, `BACKEND_BASE_URL`,
+and `FRONTEND_URL` to the deployed values. The backend must expose `/api/generate`
+and `/images` publicly for the Vercel frontend to work.
+
 ---
 
 ## 🎨 Features & Usage
