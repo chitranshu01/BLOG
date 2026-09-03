@@ -170,10 +170,51 @@ function App() {
   
 
   try {
+    await Promise.all(
+      Array.from(element.querySelectorAll("img")).map((image) => {
+        image.crossOrigin = "anonymous";
+        return image.complete
+          ? image.decode
+            ? image.decode().catch(() => {})
+            : Promise.resolve()
+          : new Promise((resolve) => {
+              image.addEventListener("load", resolve, { once: true });
+              image.addEventListener("error", resolve, { once: true });
+            });
+      })
+    );
+
     const canvas = await html2canvas(element, {
       scale: 2,
       useCORS: true,
-      backgroundColor: "#0b0f19",
+      backgroundColor: "#ffffff",
+      onclone: (clonedDocument) => {
+        const article = clonedDocument.getElementById("article-content");
+        if (!article) return;
+        article.style.background = "#ffffff";
+        article.style.color = "#172033";
+        article.style.border = "0";
+        article.querySelectorAll("h1, h2, h3, strong").forEach((node) => {
+          node.style.color = "#111827";
+        });
+        article.querySelectorAll("p, li, blockquote").forEach((node) => {
+          node.style.color = "#273449";
+        });
+        article.querySelectorAll("a").forEach((node) => {
+          node.style.color = "#174ea6";
+        });
+        article.querySelectorAll("pre, th").forEach((node) => {
+          node.style.background = "#f3f4f6";
+          node.style.color = "#172033";
+          node.style.borderColor = "#d1d5db";
+        });
+        article.querySelectorAll("td").forEach((node) => {
+          node.style.borderColor = "#d1d5db";
+        });
+        article.querySelectorAll("img").forEach((image) => {
+          image.style.borderColor = "#d1d5db";
+        });
+      },
     });
 
     const imgData = canvas.toDataURL("image/png");
