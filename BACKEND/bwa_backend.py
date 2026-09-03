@@ -355,11 +355,15 @@ def research_node(state: State) -> dict:
         if e.url in allowed_urls:
             dedup[e.url] = e
     evidence = list(dedup.values())
+    if not evidence:
+        evidence = [EvidenceItem(**item) for item in raw if item.get("url")]
 
     if state.get("mode") == "open_book":
         as_of = date.fromisoformat(state["as_of"])
         cutoff = as_of - timedelta(days=int(state["recency_days"]))
-        evidence = [e for e in evidence if (d := _iso_to_date(e.published_at)) and d >= cutoff]
+        dated = [e for e in evidence if (d := _iso_to_date(e.published_at)) and d >= cutoff]
+        if dated:
+            evidence = dated
 
     return {"evidence": evidence}
 
@@ -530,8 +534,8 @@ def merge_content(state: State) -> dict:
     evidence = _clean_evidence(state.get("evidence", []) or [])
     source_links = []
     for item in evidence[:10]:
-        url = getattr(item, "url", None) or item.get("url") if isinstance(item, dict) else None
-        title = getattr(item, "title", None) or item.get("title") if isinstance(item, dict) else "Source"
+        url = _source_value(item, "url")
+        title = _source_value(item, "title", "Source")
         if url:
             source_links.append(f"- [{title}]({url})")
     sources_section = "\n\n## Sources\n" + "\n".join(source_links) if source_links else ""

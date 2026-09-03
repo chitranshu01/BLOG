@@ -6,6 +6,7 @@ from bwa_backend import (
     Task,
     _clean_evidence,
     generate_and_place_images,
+    merge_content,
     sanitize_markdown_for_user_settings,
     resolve_router_mode,
 )
@@ -47,6 +48,32 @@ class GenerationRulesTests(unittest.TestCase):
         ])
         self.assertEqual(len(cleaned), 1)
         self.assertEqual(cleaned[0]["url"], "https://example.com/article")
+
+    def test_merge_content_includes_evidence_item_sources(self):
+        plan = Plan(
+            blog_title="RAG Guide",
+            audience="Developers",
+            tone="Clear",
+            tasks=[
+                Task(
+                    id=1,
+                    title="Introduction",
+                    goal="Explain RAG",
+                    bullets=["A", "B", "C"],
+                    target_words=200,
+                )
+            ],
+        )
+        result = merge_content({
+            "plan": plan,
+            "sections": [(1, "## Introduction\n\nRAG combines retrieval and generation.")],
+            "evidence": [{
+                "title": "A research paper",
+                "url": "https://example.com/paper",
+            }],
+        })
+        self.assertIn("## Sources", result["merged_md"])
+        self.assertIn("https://example.com/paper", result["merged_md"])
 
     def test_failed_image_generation_does_not_leak_error_block(self):
         plan = Plan(
