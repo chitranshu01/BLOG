@@ -29,6 +29,32 @@ button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 
 .app-shell { min-height: 100vh; }
+.prototype-overlay {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px;
+  background: rgba(3, 6, 12, .76); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); animation: notice-fade-in .2s ease-out;
+}
+.prototype-notice {
+  position: relative; width: min(500px, 100%); padding: 30px; border: 1px solid rgba(178,159,255,.3);
+  border-radius: 18px; background: linear-gradient(145deg, #151d2d, #0e1522); box-shadow: 0 24px 80px rgba(0,0,0,.48);
+  animation: notice-rise .25s ease-out;
+}
+.prototype-badge {
+  display: inline-flex; padding: 5px 8px; border: 1px solid rgba(178,159,255,.25); border-radius: 999px;
+  color: #c9c0ff; background: rgba(139,124,255,.1); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+}
+.prototype-notice h2 { margin: 17px 38px 11px 0; color: var(--text); font-size: 25px; letter-spacing: -.04em; }
+.prototype-notice p { margin: 0 0 11px; color: #adb7c8; font-size: 13px; line-height: 1.65; }
+.prototype-close {
+  position: absolute; top: 18px; right: 18px; display: grid; place-items: center; width: 32px; height: 32px;
+  border: 1px solid var(--line); border-radius: 9px; color: #abb5c7; background: transparent;
+}
+.prototype-close:hover { color: var(--text); border-color: var(--line-strong); }
+.prototype-action {
+  width: 100%; margin-top: 13px; border: 0; border-radius: 10px; padding: 11px 14px; color: white;
+  background: linear-gradient(135deg, #8172f4, #6253d4); font-size: 12px; font-weight: 700;
+}
+@keyframes notice-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes notice-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .topbar {
   height: 72px; border-bottom: 1px solid var(--line); background: rgba(9,13,22,.86);
   backdrop-filter: blur(16px); display: flex; align-items: center; justify-content: space-between;
@@ -176,6 +202,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .empty-state { padding: 28px 18px; border-radius: 16px; }
   .empty-copy h2 { font-size: 31px; }
   .two-col { grid-template-columns: 1fr; }
+  .prototype-notice { padding: 24px 20px; }
 }
 .export-menu {
   position: relative;

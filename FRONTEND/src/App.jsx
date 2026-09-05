@@ -60,6 +60,18 @@ const BLOG_TYPES = [
   { value: 'news_roundup', label: 'News roundup' },
 ];
 
+function normalizeExternalUrl(value) {
+  const rawUrl = String(value || '').trim();
+  if (!/^https?:\/\//i.test(rawUrl)) return '';
+
+  try {
+    const url = new URL(rawUrl);
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
 function App() {
   const [topic, setTopic] = useState('');
   const [audience, setAudience] = useState('Developers and technical readers');
@@ -75,6 +87,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [showPrototypeNotice, setShowPrototypeNotice] = useState(true);
 
   const selectedMode = useMemo(() => MODE_META[mode], [mode]);
 
@@ -344,6 +357,32 @@ function App() {
 
   return (
     <div className="app-shell">
+      {showPrototypeNotice && (
+        <div className="prototype-overlay" role="presentation">
+          <section className="prototype-notice" role="dialog" aria-modal="true" aria-labelledby="prototype-notice-title">
+            <button
+              className="prototype-close"
+              onClick={() => setShowPrototypeNotice(false)}
+              aria-label="Close prototype notice"
+            >
+              <X size={18} />
+            </button>
+            <div className="prototype-badge">Prototype</div>
+            <h2 id="prototype-notice-title">This is a demo version.</h2>
+            <p>
+              OpenRouter powers blog creation, while AI Guru Lab generates the images.
+              These free models may take 3–4 minutes, and results may vary.
+            </p>
+            <p>
+              With paid, production-grade models, generation will be faster and the responses
+              will be significantly better.
+            </p>
+            <button className="prototype-action" onClick={() => setShowPrototypeNotice(false)}>
+              Continue to demo
+            </button>
+          </section>
+        </div>
+      )}
       <header className="topbar">
         <div className="brand-block">
           <button className="mobile-menu" onClick={() => setSidebarOpen((v) => !v)} aria-label="Toggle settings">
@@ -562,9 +601,16 @@ function ArticleResult({ result }) {
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-              a: ({ href, children, ...props }) => (
-                <a href={href} target="_blank" rel="noreferrer" {...props}>{children}<ArrowUpRight size={12} /></a>
-              ),
+              a: ({ href, children, ...props }) => {
+                const externalHref = normalizeExternalUrl(href);
+                if (!externalHref) return <span {...props}>{children}</span>;
+
+                return (
+                  <a href={externalHref} target="_blank" rel="noreferrer" {...props}>
+                    {children}<ArrowUpRight size={12} />
+                  </a>
+                );
+              },
               img: ({ alt, src }) => {
                 if (!src) {
                  return null;
@@ -610,14 +656,21 @@ function ArticleResult({ result }) {
           <div className="sources-block">
             <div className="section-title">Evidence</div>
             {result.evidence.slice(0, 6).map((item) => (
-              <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="source-item">
-                <span className="source-icon"><Link2 size={13} /></span>
-                <span className="source-text">
-                  <strong>{item.title || item.url}</strong>
-                  <small>{item.source || item.url}</small>
-                </span>
-                <ArrowUpRight size={13} />
-              </a>
+              (() => {
+                const sourceUrl = normalizeExternalUrl(item.url);
+                if (!sourceUrl) return null;
+
+                return (
+                  <a key={sourceUrl} href={sourceUrl} target="_blank" rel="noreferrer" className="source-item">
+                    <span className="source-icon"><Link2 size={13} /></span>
+                    <span className="source-text">
+                      <strong>{item.title || sourceUrl}</strong>
+                      <small>{item.source || sourceUrl}</small>
+                    </span>
+                    <ArrowUpRight size={13} />
+                  </a>
+                );
+              })()
             ))}
           </div>
         )}
